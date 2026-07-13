@@ -1,0 +1,40 @@
+name: G2B 잔디보호매트 납품요구 모니터링
+
+on:
+  schedule:
+    # 매일 09:00 KST = 00:00 UTC (종합쇼핑몰 납품요구 데이터는 D-1 배치라 아침에 돌리면 됨)
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+    inputs:
+      debug:
+        description: "디버그 모드로 실행 (raw 응답만 출력, 저장/알림 없음)"
+        required: false
+        default: "false"
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 저장소 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Python 설치
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 패키지 설치
+        run: pip install requests firebase-admin
+
+      - name: 모니터링 실행
+        env:
+          G2B_SERVICE_KEY: ${{ secrets.G2B_SERVICE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          if [ "${{ github.event.inputs.debug }}" = "true" ]; then
+            python scripts/g2b_delivery_monitor.py --debug
+          else
+            python scripts/g2b_delivery_monitor.py
+          fi
