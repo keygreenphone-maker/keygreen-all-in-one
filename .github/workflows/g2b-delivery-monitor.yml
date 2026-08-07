@@ -10,6 +10,11 @@ on:
         description: "디버그 모드로 실행 (raw 응답만 출력, 저장/알림 없음)"
         required: false
         default: "false"
+      test_telegram:
+        description: "텔레그램 설정만 점검 (테스트 메시지 1건 발송 후 종료)"
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   monitor:
@@ -33,7 +38,9 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
         run: |
-          if [ "${{ github.event.inputs.debug }}" = "true" ]; then
+          if [ "${{ github.event.inputs.test_telegram }}" = "true" ]; then
+            python scripts/g2b_delivery_monitor.py --test-telegram
+          elif [ "${{ github.event.inputs.debug }}" = "true" ]; then
             python scripts/g2b_delivery_monitor.py --debug
           else
             python scripts/g2b_delivery_monitor.py

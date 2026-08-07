@@ -119,10 +119,8 @@ def save_seen_ids(db, seen_ids):
     db.document(FIRESTORE_STATE_DOC).set({"ids": trimmed, "updatedAt": datetime.datetime.utcnow().isoformat()})
 
 
-def send_telegram(text: str):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("[WARN] 텔레그램 설정이 없어 알림을 건너뜁니다.")
-        return
+def send_telegram(text: str) -> bool:
+    """전송 성공 여부를 돌려준다. 실패를 삼키면 알림이 안 온 걸 알 수 없다."""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     resp = requests.post(url, data={
         "chat_id": TELEGRAM_CHAT_ID,
@@ -131,7 +129,9 @@ def send_telegram(text: str):
         "disable_web_page_preview": True,
     }, timeout=10)
     if resp.status_code != 200:
-        print(f"[WARN] 텔레그램 전송 실패: {resp.status_code} {resp.text}")
+        print(f"[ERROR] 텔레그램 전송 실패: {resp.status_code} {resp.text}")
+        return False
+    return True
 
 
 def format_telegram_message(item: dict) -> str:
@@ -170,7 +170,21 @@ def main():
     parser.add_argument("--debug", action="store_true", help="첫 조회의 raw 응답을 출력")
     parser.add_argument("--days", type=int, default=3, help="조회할 최근 일수 (D-1 배치 특성상 여유있게 조회)")
     parser.add_argument("--dry-run", action="store_true", help="Firestore/텔레그램에 실제로 쓰지 않고 콘솔에만 출력")
+    parser.add_argument("--test-telegram", action="store_true",
+                        help="텔레그램 시크릿만 점검 (테스트 메시지 1건 발송 후 종료)")
     args = parser.parse_args()
+
+    # 실제로 알림을 보내는 모드에서만 텔레그램 설정을 요구한다 (--debug/--dry-run은 불필요)
+    if (args.test_telegram or not (args.debug or args.dry_run)) and not (TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID):
+        print("[ERROR] TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID 환경변수가 없습니다.")
+        sys.exit(1)
+
+    if args.test_telegram:
+        kst = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9)))
+        if not send_telegram(f"✅ 키그린 모니터링 설정 테스트\n{kst:%Y-%m-%d %H:%M} KST"):
+            sys.exit(1)
+        print("[INFO] 테스트 메시지 발송 성공 - 텔레그램 시크릿 정상")
+        return
 
     if not G2B_SERVICE_KEY:
         print("[ERROR] G2B_SERVICE_KEY 환경변수가 없습니다.")
@@ -214,6 +228,7 @@ def main():
 
     print(f"[INFO] 신규건 {len(new_items)}건")
 
+    failed = 0
     for item in new_items:
         key = get_item_key(item)
         seen_ids.add(key)
@@ -225,7 +240,14 @@ def main():
         })
 
         # 텔레그램 알림
-        send_telegram(format_telegram_message(item))
+        if not send_telegram(format_telegram_message(item)):
+            failed += 1
+
+    # 전송에 실패한 건이 있으면 seen_ids를 저장하지 않는다.
+    # 저장해버리면 "이미 알림 보낸 건"으로 남아 다음 실행에서 영영 재시도되지 않는다.
+    if failed:
+        print(f"[ERROR] 텔레그램 전송 실패 {failed}/{len(new_items)}건 - 다음 실행에서 재시도합니다.")
+        sys.exit(1)
 
     if new_items:
         save_seen_ids(db, seen_ids)
