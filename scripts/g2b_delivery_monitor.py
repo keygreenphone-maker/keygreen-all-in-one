@@ -2,17 +2,15 @@
 키그린 업무포털 - 종합쇼핑몰 잔디보호매트 납품요구 신규건 모니터링
 
 매일 GitHub Actions로 실행되어:
-1. 공공데이터포털 "조달청_종합쇼핑몰 품목정보서비스" API에서
-   잔디보호매트 물품식별번호(PRODUCT_IDS) 목록의 최근 납품요구 내역을 조회
+1. 공공데이터포털 "조달청_나라장터쇼핑몰 품목정보 서비스" API에서
+   잔디보호매트 물품식별번호(PRODUCT_IDS) 목록의 최근 조달내역을 조회
 2. 이전에 이미 알림 보낸 건(seen_ids)은 제외하고 신규건만 추림
 3. 신규건이 있으면 텔레그램으로 알림 + Firestore(keygreen-63efc)에 저장
    -> 업무포털 앱에서 자동으로 노출됨
 4. 이번에 처리한 납품요구번호 목록을 Firestore에 저장해서 다음 실행 때 중복 방지
 
-※ 최초 실행 전 확인 필요:
-   - G2B_API_URL / OPERATION 이름, 파라미터명은 실제 Swagger 문서 기준으로
-     한 번 검증이 필요합니다. --debug 옵션으로 raw 응답을 먼저 확인하세요.
-   - python scripts/g2b_delivery_monitor.py --debug
+API 명세: https://www.data.go.kr/data/15129471/openapi.do
+  (참고문서: 조달청_OpenAPI참고자료_조달청_나라장터쇼핑몰품목정보서비스_1.3.docx)
 """
 
 import os
@@ -37,9 +35,11 @@ PRODUCT_IDS = [
 ]
 
 # ── 공공데이터포털 API 설정 ────────────────────────────────────────────
-G2B_API_BASE = "http://apis.data.go.kr/1230000/ScshdPrdlstInfoService"
-OPERATION = "getDlvrReqInfoList"  # ※ 실제 오퍼레이션명 검증 필요 (Swagger 확인)
-G2B_SERVICE_KEY = os.environ.get("G2B_SERVICE_KEY", "")
+G2B_API_BASE = "https://apis.data.go.kr/1230000/at/ShoppingMallPrdctInfoService"
+OPERATION = "getSpcifyPrdlstPrcureInfoList"  # 쇼핑몰 특정품목 조달내역 (물품식별번호로 조회 가능)
+# 서비스키는 포털의 "디코딩" 키를 써야 합니다. 인코딩 키(%2B 등)를 넣어도
+# 아래 unquote로 한 번 풀어주므로 둘 다 동작합니다.
+G2B_SERVICE_KEY = urllib.parse.unquote(os.environ.get("G2B_SERVICE_KEY", ""))
 
 # ── 텔레그램 설정 ──────────────────────────────────────────────────────
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -52,15 +52,16 @@ FIRESTORE_STATE_DOC = "g2bMonitorState/seenIds"  # 처리 이력을 담아둘 �
 
 
 def fetch_delivery_requests(product_id: str, begin_date: str, end_date: str, debug: bool = False):
-    """물품식별번호 하나에 대한 납품요구 목록을 조회한다."""
+    """물품식별번호 하나에 대한 조달(납품요구) 내역을 조회한다."""
     params = {
         "serviceKey": G2B_SERVICE_KEY,
         "pageNo": "1",
         "numOfRows": "100",
         "type": "json",
-        "inqryDiv": "2",          # 조회구분: 2=납품요구접수일자 기준 (요검증)
-        "inqryBgnDt": begin_date,  # yyyyMMdd
-        "inqryEndDt": end_date,    # yyyyMMdd
+        "inqryDiv": "1",            # 1=계약납품요구일자 기준 (최대 12개월)
+        "inqryBgnDate": begin_date,  # yyyyMMdd
+        "inqryEndDate": end_date,    # yyyyMMdd
+        "inqryPrdctDiv": "3",       # 3=물품규격명 조회 (prdctIdntNo 사용 가능)
         "prdctIdntNo": product_id,
     }
     url = f"{G2B_API_BASE}/{OPERATION}"
@@ -71,24 +72,38 @@ def fetch_delivery_requests(product_id: str, begin_date: str, end_date: str, deb
         print(f"[DEBUG] status={resp.status_code}")
         print(resp.text[:3000])
 
-    resp.raise_for_status()
-    data = resp.json()
-
-    # 응답 구조는 검증 후 아래 경로를 실제 키로 맞춰야 합니다.
+    # 오픈API는 잘못된 엔드포인트/서비스키일 때 4xx + 에러 본문을 돌려주므로
+    # raise_for_status 전에 본문을 남겨야 원인을 알 수 있다.
     try:
-        items = data["response"]["body"]["items"]
-        if items is None or items == "":
+        data = resp.json()
+    except ValueError:
+        print(f"[ERROR] JSON이 아닌 응답 (status={resp.status_code}, product_id={product_id}):")
+        print(resp.text[:1000])
+        resp.raise_for_status()
+        raise
+
+    if "OpenAPI_ServiceResponse" in data:
+        hdr = data["OpenAPI_ServiceResponse"].get("cmmMsgHeader", {})
+        raise RuntimeError(
+            f"오픈API 오류: {hdr.get('errMsg')} / {hdr.get('returnAuthMsg')} "
+            f"(code={hdr.get('returnReasonCode')})"
+        )
+
+    header = data.get("response", {}).get("header", {})
+    if header.get("resultCode") not in ("00", None):
+        raise RuntimeError(f"오픈API 오류: {header.get('resultCode')} {header.get('resultMsg')}")
+
+    items = data.get("response", {}).get("body", {}).get("items")
+    if not items:
+        return []
+    if isinstance(items, dict):
+        item = items.get("item")
+        if not item:
             return []
-        if isinstance(items, dict) and "item" in items:
-            item = items["item"]
-            return item if isinstance(item, list) else [item]
-        if isinstance(items, list):
-            return items
-        return []
-    except (KeyError, TypeError) as e:
-        print(f"[WARN] 응답 구조 파싱 실패 (product_id={product_id}): {e}")
-        print(json.dumps(data, ensure_ascii=False)[:1000])
-        return []
+        return item if isinstance(item, list) else [item]
+    if isinstance(items, list):
+        return items
+    return []
 
 
 def load_seen_ids(db):
@@ -100,7 +115,7 @@ def load_seen_ids(db):
 
 def save_seen_ids(db, seen_ids):
     # Firestore 문서 하나에 너무 많이 쌓이지 않도록 최근 3000개만 유지
-    trimmed = list(seen_ids)[-3000:]
+    trimmed = sorted(seen_ids)[-3000:]
     db.document(FIRESTORE_STATE_DOC).set({"ids": trimmed, "updatedAt": datetime.datetime.utcnow().isoformat()})
 
 
@@ -120,30 +135,34 @@ def send_telegram(text: str):
 
 
 def format_telegram_message(item: dict) -> str:
-    name = item.get("prdlstNm") or item.get("품명") or "품명미상"
-    org = item.get("dmndInsttNm") or item.get("수요기관명") or "-"
-    region = item.get("dmndInsttRgnNm") or item.get("수요기관소재시도") or ""
-    company = item.get("corpNm") or item.get("업체명") or "-"
-    qty = item.get("dlvrQty") or item.get("납품수량") or "-"
-    amt = item.get("dlvrAmt") or item.get("납품금액") or "-"
-    date = item.get("dlvrReqRcptDate") or item.get("납품요구접수일자") or "-"
-    no = item.get("dlvrReqNo") or item.get("납품요구번호") or "-"
+    name = item.get("prdctIdntNoNm") or item.get("dtilPrdctClsfcNoNm") or "품명미상"
+    org = item.get("dminsttNm") or "-"
+    region = item.get("dminsttRgnNm") or ""
+    company = item.get("corpNm") or "-"
+    qty = item.get("prdctQty") or "-"
+    unit = item.get("prdctUnit") or ""
+    amt = item.get("prdctAmt") or "-"
+    date = item.get("cntrctDlvrReqDate") or "-"
+    no = item.get("cntrctDlvrReqNo") or "-"
+    title = item.get("cntrctDlvrReqNm") or "-"
     return (
         f"🌱 <b>잔디보호매트 신규 납품요구</b>\n"
-        f"품명: {name}\n"
+        f"품목: {name}\n"
+        f"계약명: {title}\n"
         f"수요기관: {org} ({region})\n"
         f"업체: {company}\n"
-        f"수량/금액: {qty} / {amt}원\n"
-        f"접수일자: {date}\n"
+        f"수량/금액: {qty}{unit} / {amt}원\n"
+        f"납품요구일자: {date}\n"
         f"납품요구번호: {no}"
     )
 
 
 def get_item_key(item: dict) -> str:
-    """중복 판단용 고유키 (납품요구번호 + 물품순번 등)"""
-    no = item.get("dlvrReqNo") or item.get("납품요구번호") or ""
-    seq = item.get("dlvrPrdlstSn") or item.get("납품요구물품순번") or ""
-    return f"{no}-{seq}"
+    """중복 판단용 고유키 (납품요구번호 + 변경차수 + 물품식별번호)"""
+    no = item.get("cntrctDlvrReqNo") or ""
+    ord_ = item.get("cntrctDlvrReqChgOrd") or ""
+    pid = item.get("prdctIdntNo") or ""
+    return f"{no}-{ord_}-{pid}"
 
 
 def main():
