@@ -245,7 +245,10 @@ def get_item_key(item: dict) -> str:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--debug", action="store_true", help="첫 조회의 raw 응답을 출력")
-    parser.add_argument("--days", type=int, default=3, help="조회할 최근 일수 (D-1 배치 특성상 여유있게 조회)")
+    # API가 D-1 배치인 데다 실행이 며칠 연속 실패할 수 있어서 범위를 넉넉히 잡는다.
+    # 좁게 잡으면 그 사이에 발생한 건이 범위 밖으로 밀려나 영영 알림이 안 간다.
+    # 이미 보낸 건은 seen_ids가 걸러내므로 넓혀도 중복 발송은 없다.
+    parser.add_argument("--days", type=int, default=10, help="조회할 최근 일수")
     parser.add_argument("--dry-run", action="store_true", help="Firestore/텔레그램에 실제로 쓰지 않고 콘솔에만 출력")
     parser.add_argument("--test-telegram", action="store_true",
                         help="텔레그램 시크릿만 점검 (테스트 메시지 1건 발송 후 종료)")
