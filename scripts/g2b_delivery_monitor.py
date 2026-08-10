@@ -20,6 +20,8 @@ import argparse
 import datetime
 import urllib.parse
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # ── 잔디보호매트 물품식별번호 (앱 index.html의 DATA 배열에서 추출) ──────────
 # 앱에 새 제품이 추가되면 이 리스트도 같이 업데이트해야 신규 제품의
@@ -36,10 +38,22 @@ PRODUCT_IDS = [
 
 # ── 공공데이터포털 API 설정 ────────────────────────────────────────────
 G2B_API_BASE = "https://apis.data.go.kr/1230000/at/ShoppingMallPrdctInfoService"
-OPERATION = "getSpcifyPrdlstPrcureInfoList"  # 쇼핑몰 특정품목 조달내역 (물품식별번호로 조회 가능)
+OPERATION = "getSpcifyPrdlstPrcureInfoList"  # 쇼핑몰 특정품목 조달내역
+# 세부품명 "잔디보호매트" 한 번으로 전 업체 납품요구를 받아온 뒤 PRODUCT_IDS로 거른다.
+# 물품식별번호로 31번 나눠 부르면 그만큼 타임아웃을 만날 확률이 올라간다.
+DTIL_PRDCT_CLSFC_NO = "3012189301"
 # 서비스키는 포털의 "디코딩" 키를 써야 합니다. 인코딩 키(%2B 등)를 넣어도
 # 아래 unquote로 한 번 풀어주므로 둘 다 동작합니다.
 G2B_SERVICE_KEY = urllib.parse.unquote(os.environ.get("G2B_SERVICE_KEY", ""))
+
+# apis.data.go.kr은 해외(GitHub Actions) IP에서 접속이 간헐적으로 끊긴다.
+# 재시도 없이는 이 한 번의 실패로 그날 알림이 통째로 날아간다.
+_session = requests.Session()
+_session.mount("https://", HTTPAdapter(max_retries=Retry(
+    total=4, connect=4, read=2, backoff_factor=3,   # 대기 0s, 6s, 12s, 24s
+    status_forcelist=[429, 500, 502, 503, 504],
+    allowed_methods=["GET"],
+)))
 
 # ── 텔레그램 설정 ──────────────────────────────────────────────────────
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -51,21 +65,21 @@ FIRESTORE_COLLECTION = "deliveryRequests"
 FIRESTORE_STATE_DOC = "g2bMonitorState/seenIds"  # 처리 이력을 담아둘 문서 경로
 
 
-def fetch_delivery_requests(product_id: str, begin_date: str, end_date: str, debug: bool = False):
-    """물품식별번호 하나에 대한 조달(납품요구) 내역을 조회한다."""
+def _fetch_page(begin_date: str, end_date: str, page: int, debug: bool = False):
+    """한 페이지를 조회해 (items, totalCount)를 돌려준다."""
     params = {
         "serviceKey": G2B_SERVICE_KEY,
-        "pageNo": "1",
+        "pageNo": str(page),
         "numOfRows": "100",
         "type": "json",
         "inqryDiv": "1",            # 1=계약납품요구일자 기준 (최대 12개월)
         "inqryBgnDate": begin_date,  # yyyyMMdd
         "inqryEndDate": end_date,    # yyyyMMdd
-        "inqryPrdctDiv": "3",       # 3=물품규격명 조회 (prdctIdntNo 사용 가능)
-        "prdctIdntNo": product_id,
+        "inqryPrdctDiv": "2",       # 2=세부품명 조회
+        "dtilPrdctClsfcNo": DTIL_PRDCT_CLSFC_NO,
     }
     url = f"{G2B_API_BASE}/{OPERATION}"
-    resp = requests.get(url, params=params, timeout=20)
+    resp = _session.get(url, params=params, timeout=(15, 30))
 
     if debug:
         print(f"\n[DEBUG] GET {resp.url}")
@@ -77,7 +91,7 @@ def fetch_delivery_requests(product_id: str, begin_date: str, end_date: str, deb
     try:
         data = resp.json()
     except ValueError:
-        print(f"[ERROR] JSON이 아닌 응답 (status={resp.status_code}, product_id={product_id}):")
+        print(f"[ERROR] JSON이 아닌 응답 (status={resp.status_code}, page={page}):")
         print(resp.text[:1000])
         resp.raise_for_status()
         raise
@@ -93,17 +107,31 @@ def fetch_delivery_requests(product_id: str, begin_date: str, end_date: str, deb
     if header.get("resultCode") not in ("00", None):
         raise RuntimeError(f"오픈API 오류: {header.get('resultCode')} {header.get('resultMsg')}")
 
-    items = data.get("response", {}).get("body", {}).get("items")
+    body = data.get("response", {}).get("body", {})
+    total = int(body.get("totalCount") or 0)
+
+    items = body.get("items")
     if not items:
-        return []
+        return [], total
     if isinstance(items, dict):
         item = items.get("item")
         if not item:
-            return []
-        return item if isinstance(item, list) else [item]
+            return [], total
+        return (item if isinstance(item, list) else [item]), total
     if isinstance(items, list):
-        return items
-    return []
+        return items, total
+    return [], total
+
+
+def fetch_delivery_requests(begin_date: str, end_date: str, debug: bool = False):
+    """세부품명 '잔디보호매트' 전체 조달내역을 페이지 끝까지 모아서 돌려준다."""
+    collected, page = [], 1
+    while True:
+        items, total = _fetch_page(begin_date, end_date, page, debug=(debug and page == 1))
+        collected.extend(items)
+        if not items or len(collected) >= total:
+            return collected
+        page += 1
 
 
 def load_seen_ids(db):
@@ -158,11 +186,16 @@ def format_telegram_message(item: dict) -> str:
 
 
 def get_item_key(item: dict) -> str:
-    """중복 판단용 고유키 (납품요구번호 + 변경차수 + 물품식별번호)"""
+    """중복 판단용 고유키 (납품요구번호 + 변경차수 + 물품식별번호 + 물품순번)
+
+    같은 납품요구에 같은 물품식별번호가 규격/단가만 달리해 여러 줄 들어올 수 있어서
+    물품순번까지 넣어야 한다. 빼면 두 번째 줄부터 알림이 조용히 누락된다.
+    """
     no = item.get("cntrctDlvrReqNo") or ""
     ord_ = item.get("cntrctDlvrReqChgOrd") or ""
     pid = item.get("prdctIdntNo") or ""
-    return f"{no}-{ord_}-{pid}"
+    sno = item.get("prdctSno") or ""
+    return f"{no}-{ord_}-{pid}-{sno}"
 
 
 def main():
@@ -194,12 +227,11 @@ def main():
     begin_date = (today - datetime.timedelta(days=args.days)).strftime("%Y%m%d")
     end_date = today.strftime("%Y%m%d")
 
-    all_items = []
-    for i, pid in enumerate(PRODUCT_IDS):
-        items = fetch_delivery_requests(pid, begin_date, end_date, debug=(args.debug and i == 0))
-        all_items.extend(items)
+    fetched = fetch_delivery_requests(begin_date, end_date, debug=args.debug)
+    all_items = [it for it in fetched if it.get("prdctIdntNo") in PRODUCT_IDS]
 
-    print(f"[INFO] 총 {len(all_items)}건 조회됨 (물품식별번호 {len(PRODUCT_IDS)}개, {begin_date}~{end_date})")
+    print(f"[INFO] 잔디보호매트 전체 {len(fetched)}건 중 "
+          f"우리 품목 {len(all_items)}건 ({begin_date}~{end_date})")
 
     if args.debug:
         print("[DEBUG] --debug 모드: 여기까지만 확인하고 종료합니다.")
