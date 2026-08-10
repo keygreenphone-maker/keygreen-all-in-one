@@ -15,6 +15,10 @@ on:
         required: false
         type: boolean
         default: false
+      preview:
+        description: "최근 N건을 현재 알림 형식으로 다시 발송 (저장 안 함). 예: 3"
+        required: false
+        default: ""
 
 jobs:
   monitor:
@@ -37,9 +41,12 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          PREVIEW_N: ${{ github.event.inputs.preview }}
         run: |
           if [ "${{ github.event.inputs.test_telegram }}" = "true" ]; then
             python scripts/g2b_delivery_monitor.py --test-telegram
+          elif [ -n "$PREVIEW_N" ]; then
+            python scripts/g2b_delivery_monitor.py --preview "$PREVIEW_N" --days 30
           elif [ "${{ github.event.inputs.debug }}" = "true" ]; then
             python scripts/g2b_delivery_monitor.py --debug
           else

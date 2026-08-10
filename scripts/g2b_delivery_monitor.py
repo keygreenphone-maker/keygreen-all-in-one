@@ -249,6 +249,9 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="Firestore/텔레그램에 실제로 쓰지 않고 콘솔에만 출력")
     parser.add_argument("--test-telegram", action="store_true",
                         help="텔레그램 시크릿만 점검 (테스트 메시지 1건 발송 후 종료)")
+    parser.add_argument("--preview", type=int, metavar="N",
+                        help="최근 N건을 텔레그램으로 미리보기 발송 "
+                             "(Firestore 저장·중복이력 갱신 없음. 알림 형식 확인용)")
     args = parser.parse_args()
 
     # 실제로 알림을 보내는 모드에서만 텔레그램 설정을 요구한다 (--debug/--dry-run은 불필요)
@@ -285,6 +288,21 @@ def main():
         for item in all_items:
             print(format_telegram_message(item))
             print("---")
+        return
+
+    if args.preview:
+        # 알림 형식만 확인하는 용도. Firestore와 중복이력을 건드리지 않으므로
+        # 다음 정기 실행의 신규건 판정에 영향을 주지 않는다.
+        targets = sorted(all_items, key=lambda x: x.get("cntrctDlvrReqDate") or "",
+                         reverse=True)[:args.preview]
+        print(f"[INFO] 미리보기 {len(targets)}건 발송 (저장/이력 갱신 없음)")
+        failed = 0
+        for item in targets:
+            if not send_telegram(format_telegram_message(item)):
+                failed += 1
+        if failed:
+            print(f"[ERROR] 미리보기 발송 실패 {failed}/{len(targets)}건")
+            sys.exit(1)
         return
 
     # ── Firebase 연결 ──
