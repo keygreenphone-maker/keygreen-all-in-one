@@ -162,27 +162,54 @@ def send_telegram(text: str) -> bool:
     return True
 
 
+def _fmt_num(v, signed: bool = False) -> str:
+    """천 단위 구분자를 넣는다. 숫자가 아니면 원본을 그대로 돌려준다."""
+    try:
+        n = int(float(v))
+    except (TypeError, ValueError):
+        return str(v) if v not in (None, "") else "-"
+    return f"{n:+,}" if signed else f"{n:,}"
+
+
+def _fmt_date(v) -> str:
+    s = str(v or "")
+    return f"{s[:4]}-{s[4:6]}-{s[6:8]}" if len(s) == 8 and s.isdigit() else (s or "-")
+
+
 def format_telegram_message(item: dict) -> str:
     name = item.get("prdctIdntNoNm") or item.get("dtilPrdctClsfcNoNm") or "품명미상"
     org = item.get("dminsttNm") or "-"
     region = item.get("dminsttRgnNm") or ""
     company = item.get("corpNm") or "-"
-    qty = item.get("prdctQty") or "-"
     unit = item.get("prdctUnit") or ""
-    amt = item.get("prdctAmt") or "-"
-    date = item.get("cntrctDlvrReqDate") or "-"
-    no = item.get("cntrctDlvrReqNo") or "-"
     title = item.get("cntrctDlvrReqNm") or "-"
-    return (
-        f"🌱 <b>잔디보호매트 신규 납품요구</b>\n"
-        f"품목: {name}\n"
-        f"계약명: {title}\n"
-        f"수요기관: {org} ({region})\n"
-        f"업체: {company}\n"
-        f"수량/금액: {qty}{unit} / {amt}원\n"
-        f"납품요구일자: {date}\n"
-        f"납품요구번호: {no}"
-    )
+    no = item.get("cntrctDlvrReqNo") or "-"
+    chg = (item.get("cntrctDlvrReqChgOrd") or "00").strip()
+
+    # 변경차수 건은 수량/금액이 "증액 후 누적"이라 그대로 보여주면 신규 발주로 오해된다.
+    # 이번에 실제로 움직인 양(증감)을 앞세우고 누적은 참고로 붙인다.
+    is_change = chg not in ("", "00")
+
+    lines = [
+        f"🌱 <b>잔디보호매트 납품요구 [변경 {chg}차]</b>" if is_change
+        else "🌱 <b>잔디보호매트 신규 납품요구</b>",
+        f"품목: {name}",
+        f"계약명: {title}",
+        f"수요기관: {org} ({region})" if region else f"수요기관: {org}",
+        f"업체: {company}",
+    ]
+    if is_change:
+        lines.append(f"증감: {_fmt_num(item.get('incdecQty'), signed=True)}{unit}"
+                     f" / {_fmt_num(item.get('incdecAmt'), signed=True)}원")
+        lines.append(f"누적: {_fmt_num(item.get('prdctQty'))}{unit}"
+                     f" / {_fmt_num(item.get('prdctAmt'))}원"
+                     f" (최초 {_fmt_date(item.get('IntlCntrctDlvrReqDate'))})")
+    else:
+        lines.append(f"수량/금액: {_fmt_num(item.get('prdctQty'))}{unit}"
+                     f" / {_fmt_num(item.get('prdctAmt'))}원")
+    lines.append(f"납품요구일자: {_fmt_date(item.get('cntrctDlvrReqDate'))}")
+    lines.append(f"납품요구번호: {no}")
+    return "\n".join(lines)
 
 
 def get_item_key(item: dict) -> str:
