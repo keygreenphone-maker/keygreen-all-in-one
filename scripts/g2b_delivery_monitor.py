@@ -162,11 +162,17 @@ def send_telegram(text: str) -> bool:
     return True
 
 
+def _to_int(v):
+    try:
+        return int(float(v))
+    except (TypeError, ValueError):
+        return None
+
+
 def _fmt_num(v, signed: bool = False) -> str:
     """천 단위 구분자를 넣는다. 숫자가 아니면 원본을 그대로 돌려준다."""
-    try:
-        n = int(float(v))
-    except (TypeError, ValueError):
+    n = _to_int(v)
+    if n is None:
         return str(v) if v not in (None, "") else "-"
     return f"{n:+,}" if signed else f"{n:,}"
 
@@ -189,10 +195,21 @@ def format_telegram_message(item: dict) -> str:
     # 변경차수 건은 수량/금액이 "증액 후 누적"이라 그대로 보여주면 신규 발주로 오해된다.
     # 이번에 실제로 움직인 양(증감)을 앞세우고 누적은 참고로 붙인다.
     is_change = chg not in ("", "00")
+    incdec = _to_int(item.get("incdecQty"))
+
+    # 폰 알림 미리보기는 첫 줄만 보이므로 증액/감액을 헤더에서 갈라준다.
+    if not is_change:
+        header = "🌱 <b>잔디보호매트 신규 납품요구</b>"
+    elif incdec is not None and incdec < 0:
+        kind = "전량취소" if _to_int(item.get("prdctQty")) == 0 else "감액"
+        header = f"⚠️ <b>잔디보호매트 납품요구 [변경 {chg}차 {kind}]</b>"
+    elif incdec is not None and incdec > 0:
+        header = f"🌱 <b>잔디보호매트 납품요구 [변경 {chg}차 증액]</b>"
+    else:
+        header = f"🌱 <b>잔디보호매트 납품요구 [변경 {chg}차]</b>"
 
     lines = [
-        f"🌱 <b>잔디보호매트 납품요구 [변경 {chg}차]</b>" if is_change
-        else "🌱 <b>잔디보호매트 신규 납품요구</b>",
+        header,
         f"품목: {name}",
         f"계약명: {title}",
         f"수요기관: {org} ({region})" if region else f"수요기관: {org}",
