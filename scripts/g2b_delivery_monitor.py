@@ -236,16 +236,24 @@ def format_telegram_message(item: dict) -> str:
     is_change = chg not in ("", "00")
     incdec = _to_int(item.get("incdecQty"))
 
-    # 폰 알림 미리보기는 첫 줄만 보이므로 증액/감액을 헤더에서 갈라준다.
+    # 텔레그램 Bot API의 HTML 모드는 굵게·기울임·링크 정도만 지원하고
+    # 글자색은 아예 못 바꾼다 - 대신 아이콘과 [경쟁사] 표시로 구분한다.
+    # 폰 알림은 첫 줄(헤더)만 미리보기에 뜨므로 여기서 갈라줘야 의미가 있다.
+    is_ours = "키그린" in company
+    tag = "" if is_ours else "[경쟁사] "
+
     if not is_change:
-        header = "🌱 <b>잔디보호매트 신규 납품요구</b>"
+        icon = "🌱" if is_ours else "👀"
+        header = f"{icon} <b>{tag}잔디보호매트 신규 납품요구</b>"
     elif incdec is not None and incdec < 0:
         kind = "전량취소" if _to_int(item.get("prdctQty")) == 0 else "감액"
-        header = f"⚠️ <b>잔디보호매트 납품요구 [변경 {chg}차 {kind}]</b>"
+        header = f"⚠️ <b>{tag}잔디보호매트 납품요구 [변경 {chg}차 {kind}]</b>"
     elif incdec is not None and incdec > 0:
-        header = f"🌱 <b>잔디보호매트 납품요구 [변경 {chg}차 증액]</b>"
+        icon = "🌱" if is_ours else "👀"
+        header = f"{icon} <b>{tag}잔디보호매트 납품요구 [변경 {chg}차 증액]</b>"
     else:
-        header = f"🌱 <b>잔디보호매트 납품요구 [변경 {chg}차]</b>"
+        icon = "🌱" if is_ours else "👀"
+        header = f"{icon} <b>{tag}잔디보호매트 납품요구 [변경 {chg}차]</b>"
 
     lines = [
         header,
