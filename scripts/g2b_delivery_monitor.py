@@ -142,6 +142,13 @@ def _fetch_page(begin_date: str, end_date: str, page: int, debug: bool = False):
 
 def fetch_delivery_requests(begin_date: str, end_date: str, debug: bool = False):
     """세부품명 '잔디보호매트' 전체 조달내역을 페이지 끝까지 모아서 돌려준다."""
+    # 성공한 실행의 로그만 봐서는 프록시를 탔는지 직접 호출했는지 알 방법이
+    # 없었다(에러가 나야만 URL을 찍었음). 매번 찍어서 눈으로 바로 확인되게 한다.
+    if G2B_PROXY_URL and PROXY_SECRET:
+        print(f"[INFO] G2B API 호출 경로: 프록시 ({G2B_PROXY_URL})")
+    else:
+        print(f"[INFO] G2B API 호출 경로: 직접 호출 ({G2B_API_BASE}) - "
+              f"G2B_PROXY_URL/PROXY_SECRET 미설정")
     collected, page = [], 1
     while True:
         items, total = _fetch_page(begin_date, end_date, page, debug=(debug and page == 1))
