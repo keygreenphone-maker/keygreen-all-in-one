@@ -6,7 +6,9 @@
    잔디보호매트 물품식별번호(PRODUCT_IDS) 목록의 최근 조달내역을 조회
 2. 이전에 이미 알림 보낸 건(seen_ids)은 제외하고 신규건만 추림
 3. 신규건이 있으면 텔레그램으로 알림 + Firestore(keygreen-63efc)에 저장
-   -> 업무포털 앱에서 자동으로 노출됨
+   -> 업무포털 앱에서 자동으로 노출됨. 신규건이 없어도 "점검했다"는 짧은
+   확인 메시지를 보낸다 - 하루 3번(09/13/17시) 도는데, 조용하면 실행 자체가
+   안 됐는지 정말 신규가 없는 건지 구분이 안 되기 때문.
 4. 이번에 처리한 납품요구번호 목록을 Firestore에 저장해서 다음 실행 때 중복 방지
 
 API 명세: https://www.data.go.kr/data/15129471/openapi.do
@@ -206,6 +208,19 @@ def _fmt_date(v) -> str:
     return f"{s[:4]}-{s[4:6]}-{s[6:8]}" if len(s) == 8 and s.isdigit() else (s or "-")
 
 
+def format_heartbeat_message(begin_date: str, end_date: str, total_checked: int, our_count: int) -> str:
+    """신규건이 0건일 때 보내는 짧은 점검 완료 메시지.
+    하루 3번 도는데 조용하면 "확인했는데 없었다"와 "실행이 아예 안 됐다"를
+    구분할 수 없어서, 매 실행마다 결과를 남긴다."""
+    kst = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9)))
+    return (
+        f"✅ <b>납품요구 점검 완료</b> · 신규 없음\n"
+        f"{kst:%Y-%m-%d %H:%M} KST\n"
+        f"조회범위 {_fmt_date(begin_date)}~{_fmt_date(end_date)}"
+        f" (전체 {total_checked}건 중 우리 품목 {our_count}건)"
+    )
+
+
 def format_telegram_message(item: dict) -> str:
     name = item.get("prdctIdntNoNm") or item.get("dtilPrdctClsfcNoNm") or "품명미상"
     org = item.get("dminsttNm") or "-"
@@ -372,6 +387,13 @@ def main():
 
     if new_items:
         save_seen_ids(db, seen_ids)
+    else:
+        # 신규건이 없어도 실행은 됐다는 걸 알려준다. 하루 3번 도는데 계속
+        # 조용하면 "확인했는데 없었다"인지 "실행이 아예 안 됐다"인지 구분이
+        # 안 된다. 실패해도 seen_ids와 무관해서 재시도할 게 없으니 exit(1)
+        # 하지 않고 경고만 남긴다.
+        if not send_telegram(format_heartbeat_message(begin_date, end_date, len(fetched), len(all_items))):
+            print("[WARN] 점검 완료 메시지 전송 실패 (다음 실행에서 다시 보내집니다)")
 
     print("[INFO] 완료")
 
