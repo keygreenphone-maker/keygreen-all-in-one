@@ -44,6 +44,10 @@ jobs:
       - name: 모니터링 실행
         env:
           G2B_SERVICE_KEY: ${{ secrets.G2B_SERVICE_KEY }}
+          # 서울 리전(Vercel)에서 도는 프록시를 거쳐 apis.data.go.kr을 호출한다.
+          # 둘 중 하나라도 비어 있으면 스크립트가 예전처럼 직접 호출로 돌아간다.
+          G2B_PROXY_URL: ${{ secrets.G2B_PROXY_URL }}
+          PROXY_SECRET: ${{ secrets.PROXY_SECRET }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}

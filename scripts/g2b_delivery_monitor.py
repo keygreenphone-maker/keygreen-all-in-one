@@ -46,6 +46,13 @@ DTIL_PRDCT_CLSFC_NO = "3012189301"
 # 아래 unquote로 한 번 풀어주므로 둘 다 동작합니다.
 G2B_SERVICE_KEY = urllib.parse.unquote(os.environ.get("G2B_SERVICE_KEY", ""))
 
+# GitHub Actions(미국 리전)에서 apis.data.go.kr로 직접 붙으면 간헐적으로
+# ConnectTimeout이 난다. 두 값이 다 설정돼 있으면 서울 리전에서 도는 프록시
+# (kg-dashboard/pages/api/g2b-proxy.js)를 거쳐서 호출한다. 둘 중 하나라도
+# 없으면(로컬 실행 등) 예전처럼 apis.data.go.kr을 직접 부른다.
+G2B_PROXY_URL = os.environ.get("G2B_PROXY_URL", "")
+PROXY_SECRET = os.environ.get("PROXY_SECRET", "")
+
 # apis.data.go.kr은 해외(GitHub Actions) IP에서 접속이 간헐적으로 끊긴다.
 # 재시도 없이는 이 한 번의 실패로 그날 알림이 통째로 날아간다.
 _session = requests.Session()
@@ -78,8 +85,18 @@ def _fetch_page(begin_date: str, end_date: str, page: int, debug: bool = False):
         "inqryPrdctDiv": "2",       # 2=세부품명 조회
         "dtilPrdctClsfcNo": DTIL_PRDCT_CLSFC_NO,
     }
-    url = f"{G2B_API_BASE}/{OPERATION}"
-    resp = _session.get(url, params=params, timeout=(15, 30))
+    use_proxy = bool(G2B_PROXY_URL and PROXY_SECRET)
+    if use_proxy:
+        url = G2B_PROXY_URL
+        resp = _session.get(
+            url,
+            params={**params, "op": OPERATION},
+            headers={"x-proxy-key": PROXY_SECRET},
+            timeout=(15, 30),
+        )
+    else:
+        url = f"{G2B_API_BASE}/{OPERATION}"
+        resp = _session.get(url, params=params, timeout=(15, 30))
 
     if debug:
         print(f"\n[DEBUG] GET {resp.url}")
