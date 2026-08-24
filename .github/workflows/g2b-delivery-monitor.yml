@@ -2,27 +2,31 @@ name: G2B 잔디보호매트 납품요구 모니터링
 
 on:
   schedule:
-    # 하루 3번 시도 (09:05 / 13:05 / 17:05 KST = 00:05 / 04:05 / 08:05 UTC).
-    # apis.data.go.kr가 미국 리전 GitHub Actions에서 간헐적으로 ConnectTimeout이 나서
-    # 재시도 로직만으로는 부족했다(8/8, 8/9, 8/11 아침 실행 전부 실패). 조회 범위가
-    # 10일이고 seen_ids로 중복을 걸러내므로, 여러 번 돌려도 중복 알림 없이
-    # "그날 안에 한 번은 성공할 확률"만 올라간다.
-    # 정각(0분)은 전 세계 예약 작업이 몰려서 GitHub이 통째로 건너뛰는 일이 있었다
-    # (8/13 09:00 실행 누락). 5분으로 옮겨 혼잡 시간대를 피한다.
-    - cron: "5 0 * * *"
-    - cron: "5 4 * * *"
-    - cron: "5 8 * * *"
+    # 평일 하루 3번 실행
+    # 09:05 / 13:05 / 17:05 KST
+    # = 00:05 / 04:05 / 08:05 UTC
+    #
+    # 정각은 GitHub Actions 예약 작업이 몰릴 수 있어
+    # 5분으로 설정해 혼잡 시간대를 피한다.
+    #
+    # 월~금만 실행하고, 한국 공휴일은 아래 단계에서 추가로 제외한다.
+    - cron: "5 0 * * 1-5"
+    - cron: "5 4 * * 1-5"
+    - cron: "5 8 * * 1-5"
+
   workflow_dispatch:
     inputs:
       debug:
         description: "디버그 모드로 실행 (raw 응답만 출력, 저장/알림 없음)"
         required: false
         default: "false"
+
       test_telegram:
         description: "텔레그램 설정만 점검 (테스트 메시지 1건 발송 후 종료)"
         required: false
         type: boolean
         default: false
+
       preview:
         description: "최근 N건을 현재 알림 형식으로 다시 발송 (저장 안 함). 예: 3"
         required: false
@@ -31,6 +35,7 @@ on:
 jobs:
   monitor:
     runs-on: ubuntu-latest
+
     steps:
       - name: 저장소 체크아웃
         uses: actions/checkout@v4
@@ -41,26 +46,58 @@ jobs:
           python-version: "3.11"
 
       - name: 패키지 설치
-        run: pip install requests firebase-admin
+        run: pip install requests firebase-admin holidays
+
+      - name: 한국 공휴일 확인
+        id: holiday
+        run: |
+          python - <<'PY'
+          import os
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          import holidays
+
+          today = datetime.now(ZoneInfo("Asia/Seoul")).date()
+          kr_holidays = holidays.KR(years=today.year)
+
+          is_holiday = today in kr_holidays
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write(f"is_holiday={'true' if is_holiday else 'false'}\n")
+
+          if is_holiday:
+              print(f"[INFO] {today} 공휴일 ({kr_holidays.get(today)}) - 자동 조회를 건너뜁니다.")
+          else:
+              print(f"[INFO] {today} 정상 영업일 - 조회를 진행합니다.")
+          PY
 
       - name: 모니터링 실행
+        if: github.event_name == 'workflow_dispatch' || steps.holiday.outputs.is_holiday != 'true'
         env:
           G2B_SERVICE_KEY: ${{ secrets.G2B_SERVICE_KEY }}
+
           # 서울 리전(Vercel)에서 도는 프록시를 거쳐 apis.data.go.kr을 호출한다.
-          # 둘 중 하나라도 비어 있으면 스크립트가 예전처럼 직접 호출로 돌아간다.
+          # 둘 중 하나라도 비어 있으면 스크립트가 직접 호출로 돌아간다.
           G2B_PROXY_URL: ${{ secrets.G2B_PROXY_URL }}
           PROXY_SECRET: ${{ secrets.PROXY_SECRET }}
+
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+
           PREVIEW_N: ${{ github.event.inputs.preview }}
+
         run: |
           if [ "${{ github.event.inputs.test_telegram }}" = "true" ]; then
             python scripts/g2b_delivery_monitor.py --test-telegram
+
           elif [ -n "$PREVIEW_N" ]; then
             python scripts/g2b_delivery_monitor.py --preview "$PREVIEW_N" --days 30
+
           elif [ "${{ github.event.inputs.debug }}" = "true" ]; then
             python scripts/g2b_delivery_monitor.py --debug
+
           else
             python scripts/g2b_delivery_monitor.py
           fi
