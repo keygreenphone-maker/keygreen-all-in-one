@@ -365,7 +365,7 @@ def main():
 
     cred = credentials.Certificate(json.loads(FIREBASE_SERVICE_ACCOUNT_JSON))
     firebase_admin.initialize_app(cred)
-    db = firestore.client()
+    db = firestore.client(database_id="(default)")
 
     seen_ids = load_seen_ids(db)
     new_items = [item for item in all_items if get_item_key(item) not in seen_ids]
