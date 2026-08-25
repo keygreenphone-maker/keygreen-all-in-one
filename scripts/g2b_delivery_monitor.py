@@ -160,17 +160,120 @@ def fetch_delivery_requests(begin_date: str, end_date: str, debug: bool = False)
         page += 1
 
 
+def _firestore_rest_auth():
+    """Firestore SDK 장애 시 REST API 인증정보 생성."""
+    from google.oauth2 import service_account
+    from google.auth.transport.requests import Request
+
+    info = json.loads(FIREBASE_SERVICE_ACCOUNT_JSON)
+
+    creds = service_account.Credentials.from_service_account_info(
+        info,
+        scopes=["https://www.googleapis.com/auth/datastore"],
+    )
+    creds.refresh(Request())
+
+    return info["project_id"], creds.token
+
+
 def load_seen_ids(db):
-    doc = db.document(FIRESTORE_STATE_DOC).get()
-    if doc.exists:
-        return set(doc.to_dict().get("ids", []))
-    return set()
+    """기존 SDK를 먼저 사용하고, 실패하면 REST API로 자동 우회."""
+    try:
+        doc = db.document(FIRESTORE_STATE_DOC).get()
+
+        if doc.exists:
+            return set(doc.to_dict().get("ids", []))
+
+        return set()
+
+    except Exception as e:
+        print(f"[WARN] Firestore SDK 읽기 실패: {e}")
+        print("[WARN] REST 방식으로 seenIds를 읽습니다.")
+
+        project_id, token = _firestore_rest_auth()
+
+        url = (
+            f"https://firestore.googleapis.com/v1/projects/{project_id}"
+            f"/databases/(default)/documents/{FIRESTORE_STATE_DOC}"
+        )
+
+        resp = requests.get(
+            url,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=20,
+        )
+
+        if resp.status_code == 404:
+            return set()
+
+        resp.raise_for_status()
+
+        values = (
+            resp.json()
+            .get("fields", {})
+            .get("ids", {})
+            .get("arrayValue", {})
+            .get("values", [])
+        )
+
+        return {
+            value.get("stringValue")
+            for value in values
+            if value.get("stringValue")
+        }
 
 
 def save_seen_ids(db, seen_ids):
-    # Firestore 문서 하나에 너무 많이 쌓이지 않도록 최근 3000개만 유지
+    """기존 SDK 저장 실패 시 REST API로 자동 우회."""
     trimmed = sorted(seen_ids)[-3000:]
-    db.document(FIRESTORE_STATE_DOC).set({"ids": trimmed, "updatedAt": datetime.datetime.utcnow().isoformat()})
+
+    data = {
+        "ids": trimmed,
+        "updatedAt": datetime.datetime.utcnow().isoformat(),
+    }
+
+    try:
+        db.document(FIRESTORE_STATE_DOC).set(data)
+        return
+
+    except Exception as e:
+        print(f"[WARN] Firestore SDK 저장 실패: {e}")
+        print("[WARN] REST 방식으로 seenIds를 저장합니다.")
+
+    project_id, token = _firestore_rest_auth()
+
+    url = (
+        f"https://firestore.googleapis.com/v1/projects/{project_id}"
+        f"/databases/(default)/documents/{FIRESTORE_STATE_DOC}"
+    )
+
+    body = {
+        "fields": {
+            "ids": {
+                "arrayValue": {
+                    "values": [
+                        {"stringValue": item_id}
+                        for item_id in trimmed
+                    ]
+                }
+            },
+            "updatedAt": {
+                "stringValue": data["updatedAt"]
+            },
+        }
+    }
+
+    resp = requests.patch(
+        url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        json=body,
+        timeout=20,
+    )
+
+    resp.raise_for_status()
 
 
 def send_telegram(text: str) -> bool:
