@@ -480,11 +480,47 @@ def main():
         key = get_item_key(item)
         seen_ids.add(key)
 
-        # Firestore에 저장 -> 앱에서 표시
-        db.collection(FIRESTORE_COLLECTION).add({
-            **item,
-            "notifiedAt": datetime.datetime.utcnow().isoformat(),
-        })
+# Firestore에 저장 -> SDK 장애 시 REST로 자동 우회
+try:
+    db.collection(FIRESTORE_COLLECTION).add({
+        **item,
+        "notifiedAt": datetime.datetime.utcnow().isoformat(),
+    })
+
+except Exception as e:
+    print(f"[WARN] Firestore SDK 발주 저장 실패: {e}")
+    print("[WARN] REST 방식으로 발주 데이터를 저장합니다.")
+
+    project_id, token = _firestore_rest_auth()
+
+    url = (
+        f"https://firestore.googleapis.com/v1/projects/{project_id}"
+        f"/databases/(default)/documents/{FIRESTORE_COLLECTION}"
+    )
+
+    body = {
+        "fields": {
+            str(k): {
+                "stringValue": str(v)
+            }
+            for k, v in {
+                **item,
+                "notifiedAt": datetime.datetime.utcnow().isoformat(),
+            }.items()
+        }
+    }
+
+    resp = requests.post(
+        url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        json=body,
+        timeout=20,
+    )
+
+    resp.raise_for_status()
 
         # 텔레그램 알림
         if not send_telegram(format_telegram_message(item)):
