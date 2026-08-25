@@ -46,7 +46,9 @@ jobs:
           python-version: "3.11"
 
       - name: 패키지 설치
-        run: pip install requests firebase-admin holidays
+        run: |
+          pip install requests holidays
+          pip install "firebase-admin==6.9.0" "google-cloud-firestore==2.20.2"
 
       - name: 한국 공휴일 확인
         id: holiday
