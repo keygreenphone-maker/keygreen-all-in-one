@@ -49,6 +49,10 @@ jobs:
         run: |
           pip install requests holidays
           pip install "firebase-admin==6.9.0" "google-cloud-firestore==2.20.2"
+          pip show firebase-admin
+          pip show google-cloud-firestore
+          pip show google-api-core
+          pip show grpcio
 
       - name: 한국 공휴일 확인
         id: holiday
