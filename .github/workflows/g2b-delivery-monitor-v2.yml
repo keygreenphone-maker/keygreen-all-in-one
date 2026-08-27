@@ -1,14 +1,11 @@
-name: G2B 잔디보호매트 납품요구 모니터링
+name: G2B 잔디보호매트 납품요구 모니터링 (09:05·13:05·17:05)
 
 on:
   schedule:
-    # 평일 하루 3번 실행
-    # 09:05 / 13:05 / 17:05 KST
+    # 평일 09:05 / 13:05 / 17:05 KST
     # = 00:05 / 04:05 / 08:05 UTC
-    #
-    # 정각은 GitHub Actions 예약 작업이 몰릴 수 있어
-    # 5분으로 설정해 혼잡 시간대를 피한다.
-    #
+    # 정각의 GitHub Actions 혼잡 시간을 피하기 위해 5분 늦춘다.
+    # 파일명을 v2로 변경해 GitHub에 남아 있던 이전 예약값을 폐기하고 재등록한다.
     # 월~금만 실행하고, 한국 공휴일은 아래 단계에서 추가로 제외한다.
     - cron: "5 0 * * 1-5"
     - cron: "5 4 * * 1-5"
@@ -48,8 +45,8 @@ jobs:
       - name: 패키지 설치
         run: pip install requests firebase-admin holidays
 
-      - name: 한국 공휴일 확인
-        id: holiday
+      - name: 한국 공휴일·알림 허용시간 확인
+        id: guard
         run: |
           python - <<'PY'
           import os
@@ -57,22 +54,29 @@ jobs:
           from zoneinfo import ZoneInfo
           import holidays
 
-          today = datetime.now(ZoneInfo("Asia/Seoul")).date()
+          now = datetime.now(ZoneInfo("Asia/Seoul"))
+          today = now.date()
           kr_holidays = holidays.KR(years=today.year)
-
           is_holiday = today in kr_holidays
+          is_weekday = now.weekday() < 5
+          is_work_hours = 8 <= now.hour < 18
+          allowed = is_weekday and not is_holiday and is_work_hours
 
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
-              f.write(f"is_holiday={'true' if is_holiday else 'false'}\n")
+              f.write(f"allowed={'true' if allowed else 'false'}\n")
 
           if is_holiday:
-              print(f"[INFO] {today} 공휴일 ({kr_holidays.get(today)}) - 자동 조회를 건너뜁니다.")
+              print(f"[INFO] {today} 공휴일 ({kr_holidays.get(today)}) - 알림을 차단합니다.")
+          elif not is_weekday:
+              print(f"[INFO] {today} 주말 - 알림을 차단합니다.")
+          elif not is_work_hours:
+              print(f"[INFO] {now:%Y-%m-%d %H:%M} KST 허용시간(08:00~18:00) 밖 - 알림을 차단합니다.")
           else:
-              print(f"[INFO] {today} 정상 영업일 - 조회를 진행합니다.")
+              print(f"[INFO] {now:%Y-%m-%d %H:%M} KST 알림 허용시간 - 조회를 진행합니다.")
           PY
 
       - name: 모니터링 실행
-        if: github.event_name == 'workflow_dispatch' || steps.holiday.outputs.is_holiday != 'true'
+        if: steps.guard.outputs.allowed == 'true'
         env:
           G2B_SERVICE_KEY: ${{ secrets.G2B_SERVICE_KEY }}
 
