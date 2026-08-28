@@ -5,7 +5,8 @@ on:
     # 평일 09:05 / 13:05 / 17:05 KST
     # = 00:05 / 04:05 / 08:05 UTC
     # 정각의 GitHub Actions 혼잡 시간을 피하기 위해 5분 늦춘다.
-    # 파일명을 v2로 변경해 GitHub에 남아 있던 이전 예약값을 폐기하고 재등록한다.
+    # 파일 경로를 이전 이름(g2b-delivery-monitor.yml)으로 되돌린다.
+    # v2로 변경했던 예약이 하루 동안 한 번도 등록되지 않아 원래 경로로 복귀.
     # 월~금만 실행하고, 한국 공휴일은 아래 단계에서 추가로 제외한다.
     - cron: "5 0 * * 1-5"
     - cron: "5 4 * * 1-5"
@@ -74,6 +75,16 @@ jobs:
           else:
               print(f"[INFO] {now:%Y-%m-%d %H:%M} KST 알림 허용시간 - 조회를 진행합니다.")
           PY
+
+      - name: 실행 헬스체크 요약 (텔레그램 전송 없음, Actions 요약에만 기록)
+        if: always()
+        run: |
+          {
+            echo "### G2B 모니터링 실행 상태"
+            echo "- 트리거: ${{ github.event_name }}"
+            echo "- 실행 시각(KST): $(TZ='Asia/Seoul' date '+%Y-%m-%d %H:%M:%S %a')"
+            echo "- 알림 허용 여부(allowed): ${{ steps.guard.outputs.allowed }}"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: 모니터링 실행
         if: steps.guard.outputs.allowed == 'true'
