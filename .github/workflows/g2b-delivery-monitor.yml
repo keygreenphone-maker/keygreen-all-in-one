@@ -102,6 +102,9 @@ jobs:
 
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # test_telegram=true 전용 수신처(운영자 1:1). 그룹방(TELEGRAM_CHAT_ID)과는
+          # 별개이며, 스크립트는 이 값이 없으면 그룹 ID로 대체 발송하지 않고 실패한다.
+          TELEGRAM_TEST_CHAT_ID: ${{ secrets.TELEGRAM_TEST_CHAT_ID }}
 
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
 

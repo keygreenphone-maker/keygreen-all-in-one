@@ -125,6 +125,77 @@ class SendTelegramTest(unittest.TestCase):
         self.assertFalse(result)
         self.assertEqual(mock_post.call_count, 1)
 
+    def test_explicit_chat_id_overrides_group_chat_id(self):
+        """chat_id를 명시하면 그룹방(TELEGRAM_CHAT_ID)이 아니라 그 값으로 보내야 한다.
+
+        test_telegram=true 경로가 TELEGRAM_TEST_CHAT_ID(운영자 1:1)를 여기로 넘기므로,
+        그룹 ID가 섞여 들어가면 테스트 메시지가 그룹방에 새게 된다."""
+        with patch(
+            "g2b_delivery_monitor.requests.post",
+            side_effect=[FakeResponse(200, {"ok": True})],
+        ) as mock_post:
+            result = monitor.send_telegram("hello", chat_id="999888777")
+
+        self.assertTrue(result)
+        self.assertEqual(mock_post.call_args.kwargs["data"]["chat_id"], "999888777")
+
+    def test_no_chat_id_defaults_to_group_chat_id(self):
+        """chat_id를 안 넘기면(기존 정상 알림 경로) 여전히 그룹방으로 보내야 한다."""
+        with patch(
+            "g2b_delivery_monitor.requests.post",
+            side_effect=[FakeResponse(200, {"ok": True})],
+        ) as mock_post:
+            monitor.send_telegram("hello")
+
+        self.assertEqual(mock_post.call_args.kwargs["data"]["chat_id"], "-100111222333")
+
+
+class MainTestTelegramModeTest(unittest.TestCase):
+    """--test-telegram(main())이 TELEGRAM_TEST_CHAT_ID만 쓰고, 없으면 그룹 ID로
+    폴백하지 않은 채 안전하게 실패하는지 검증."""
+
+    def setUp(self):
+        self._orig_token = monitor.TELEGRAM_BOT_TOKEN
+        self._orig_chat_id = monitor.TELEGRAM_CHAT_ID
+        self._orig_test_chat_id = monitor.TELEGRAM_TEST_CHAT_ID
+        self._orig_argv = sys.argv
+        monitor.TELEGRAM_BOT_TOKEN = "synthetic-test-token"
+        monitor.TELEGRAM_CHAT_ID = "-100111222333"  # 그룹방 - 테스트 메시지가 절대 가면 안 됨
+
+    def tearDown(self):
+        monitor.TELEGRAM_BOT_TOKEN = self._orig_token
+        monitor.TELEGRAM_CHAT_ID = self._orig_chat_id
+        monitor.TELEGRAM_TEST_CHAT_ID = self._orig_test_chat_id
+        sys.argv = self._orig_argv
+
+    def test_missing_test_chat_id_fails_without_fallback_to_group(self):
+        """TELEGRAM_TEST_CHAT_ID가 없으면 그룹 ID로 대체 발송하지 않고 즉시 실패해야 한다."""
+        monitor.TELEGRAM_TEST_CHAT_ID = ""
+        sys.argv = ["g2b_delivery_monitor.py", "--test-telegram"]
+
+        with patch("g2b_delivery_monitor.requests.post") as mock_post:
+            with self.assertRaises(SystemExit) as ctx:
+                monitor.main()
+
+        self.assertEqual(ctx.exception.code, 1)
+        mock_post.assert_not_called()
+
+    def test_test_telegram_sends_only_to_test_chat_id(self):
+        """test_telegram=true는 TELEGRAM_TEST_CHAT_ID로만 보내고 그룹 ID는 쓰면 안 된다."""
+        monitor.TELEGRAM_TEST_CHAT_ID = "555444333"  # 운영자 1:1 (그룹 ID와 달라야 함)
+        sys.argv = ["g2b_delivery_monitor.py", "--test-telegram"]
+
+        with patch(
+            "g2b_delivery_monitor.requests.post",
+            side_effect=[FakeResponse(200, {"ok": True})],
+        ) as mock_post:
+            monitor.main()
+
+        mock_post.assert_called_once()
+        sent_chat_id = mock_post.call_args.kwargs["data"]["chat_id"]
+        self.assertEqual(sent_chat_id, "555444333")
+        self.assertNotEqual(sent_chat_id, monitor.TELEGRAM_CHAT_ID)
+
 
 class DedupAndFormattingRegressionTest(unittest.TestCase):
     """텔레그램 수정과 무관한 기존 기능(중복 방지 키, 메시지 포맷)이 안 깨졌는지 확인."""

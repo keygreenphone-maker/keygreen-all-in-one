@@ -67,6 +67,9 @@ _session.mount("https://", HTTPAdapter(max_retries=Retry(
 # ── 텔레그램 설정 ──────────────────────────────────────────────────────
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+# --test-telegram 전용 수신처(운영자 1:1). 정상 알림(그룹방)과 절대 섞이면 안 되므로
+# 별도 변수로 두고, 비어 있어도 TELEGRAM_CHAT_ID로 조용히 대체하지 않는다.
+TELEGRAM_TEST_CHAT_ID = os.environ.get("TELEGRAM_TEST_CHAT_ID", "")
 
 # ── Firebase 설정 ──────────────────────────────────────────────────────
 FIREBASE_SERVICE_ACCOUNT_JSON = os.environ.get("FIREBASE_SERVICE_ACCOUNT", "")
@@ -289,19 +292,24 @@ def _extract_migrate_to_chat_id(resp) -> str:
     return str(migrate_to) if migrate_to is not None else ""
 
 
-def send_telegram(text: str) -> bool:
-    """전송 성공 여부를 돌려준다. 실패를 삼키면 알림이 안 온 걸 알 수 없다."""
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+def send_telegram(text: str, chat_id: str = None) -> bool:
+    """전송 성공 여부를 돌려준다. 실패를 삼키면 알림이 안 온 걸 알 수 없다.
 
-    def _post(chat_id):
+    chat_id를 넘기지 않으면 정상 알림 수신처(TELEGRAM_CHAT_ID, 그룹방)로 보낸다.
+    --test-telegram 등 테스트 경로는 반드시 chat_id를 명시적으로 넘겨야 하며,
+    여기서 그룹방 ID로 조용히 대체하지 않는다."""
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    target_chat_id = TELEGRAM_CHAT_ID if chat_id is None else chat_id
+
+    def _post(cid):
         return requests.post(url, data={
-            "chat_id": chat_id,
+            "chat_id": cid,
             "text": text,
             "parse_mode": "HTML",
             "disable_web_page_preview": True,
         }, timeout=10)
 
-    resp = _post(TELEGRAM_CHAT_ID)
+    resp = _post(target_chat_id)
     if resp.status_code == 200:
         return True
 
@@ -435,14 +443,24 @@ def main():
                              "(Firestore 저장·중복이력 갱신 없음. 알림 형식 확인용)")
     args = parser.parse_args()
 
-    # 실제로 알림을 보내는 모드에서만 텔레그램 설정을 요구한다 (--debug/--dry-run은 불필요)
-    if (args.test_telegram or not (args.debug or args.dry_run)) and not (TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID):
+    # --test-telegram은 운영자 1:1(TELEGRAM_TEST_CHAT_ID)로만 보내야 하므로 별도 검증한다.
+    # TELEGRAM_CHAT_ID(그룹방)로 대체 발송하면 테스트 메시지가 그룹방에 새는 사고가 되므로
+    # TELEGRAM_TEST_CHAT_ID가 없으면 그룹 ID로 폴백하지 않고 즉시 실패한다.
+    if args.test_telegram:
+        if not (TELEGRAM_BOT_TOKEN and TELEGRAM_TEST_CHAT_ID):
+            print("[ERROR] TELEGRAM_BOT_TOKEN / TELEGRAM_TEST_CHAT_ID 환경변수가 없습니다.")
+            sys.exit(1)
+    # 실제로 정상 알림을 보내는 모드에서만 텔레그램 설정을 요구한다 (--debug/--dry-run은 불필요)
+    elif not (args.debug or args.dry_run) and not (TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID):
         print("[ERROR] TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID 환경변수가 없습니다.")
         sys.exit(1)
 
     if args.test_telegram:
         kst = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9)))
-        if not send_telegram(f"✅ 키그린 모니터링 설정 테스트\n{kst:%Y-%m-%d %H:%M} KST"):
+        if not send_telegram(
+            f"✅ 키그린 모니터링 설정 테스트\n{kst:%Y-%m-%d %H:%M} KST",
+            chat_id=TELEGRAM_TEST_CHAT_ID,
+        ):
             sys.exit(1)
         print("[INFO] 테스트 메시지 발송 성공 - 텔레그램 시크릿 정상")
         return
