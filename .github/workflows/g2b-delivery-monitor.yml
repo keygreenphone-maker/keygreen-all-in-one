@@ -87,7 +87,11 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: 모니터링 실행
-        if: steps.guard.outputs.allowed == 'true'
+        # test_telegram=true는 텔레그램 시크릿만 점검하는 1회성 테스트라
+        # 주말/공휴일/허용시간 가드와 무관하게 실행돼야 한다. 그렇지 않으면
+        # 가드가 막는 시간대(예: 주말)에는 workflow_dispatch로 넣은
+        # test_telegram=true가 조용히 스킵돼 테스트 메시지가 발송되지 않는다.
+        if: steps.guard.outputs.allowed == 'true' || github.event.inputs.test_telegram == 'true'
         env:
           G2B_SERVICE_KEY: ${{ secrets.G2B_SERVICE_KEY }}
 
