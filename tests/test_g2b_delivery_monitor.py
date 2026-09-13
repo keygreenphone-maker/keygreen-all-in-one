@@ -197,6 +197,129 @@ class MainTestTelegramModeTest(unittest.TestCase):
         self.assertNotEqual(sent_chat_id, monitor.TELEGRAM_CHAT_ID)
 
 
+class MainTestTelegramPreviewCombinationTest(unittest.TestCase):
+    """test_telegram=true + preview=N 조합 회귀 테스트.
+
+    실제 최신 N건을 운영자 1:1(TELEGRAM_TEST_CHAT_ID)에게만 보내야 하고,
+    그룹(TELEGRAM_CHAT_ID)으로 새면 안 되며, Firestore/seen_ids는 건드리지
+    않아야 한다. 외부 API(fetch_delivery_requests)와 텔레그램 전송은 전부 목 처리한다.
+    """
+
+    def setUp(self):
+        self._orig_token = monitor.TELEGRAM_BOT_TOKEN
+        self._orig_chat_id = monitor.TELEGRAM_CHAT_ID
+        self._orig_test_chat_id = monitor.TELEGRAM_TEST_CHAT_ID
+        self._orig_service_key = monitor.G2B_SERVICE_KEY
+        self._orig_argv = sys.argv
+        monitor.TELEGRAM_BOT_TOKEN = "synthetic-test-token"
+        monitor.TELEGRAM_CHAT_ID = "-100111222333"  # 그룹방 - 여기로 가면 안 됨
+        monitor.TELEGRAM_TEST_CHAT_ID = "555444333"  # 운영자 1:1
+        monitor.G2B_SERVICE_KEY = "synthetic-service-key"
+
+    def tearDown(self):
+        monitor.TELEGRAM_BOT_TOKEN = self._orig_token
+        monitor.TELEGRAM_CHAT_ID = self._orig_chat_id
+        monitor.TELEGRAM_TEST_CHAT_ID = self._orig_test_chat_id
+        monitor.G2B_SERVICE_KEY = self._orig_service_key
+        sys.argv = self._orig_argv
+
+    @staticmethod
+    def _item(no, date, pid="23260735"):
+        return {
+            "cntrctDlvrReqNo": no,
+            "cntrctDlvrReqChgOrd": "00",
+            "prdctIdntNo": pid,
+            "prdctSno": "1",
+            "cntrctDlvrReqDate": date,
+            "prdctIdntNoNm": "잔디보호매트",
+            "corpNm": "키그린(주)",
+        }
+
+    def test_sends_latest_n_real_items_to_test_chat_id_only(self):
+        items = [
+            self._item("20240001", "20240101"),
+            self._item("20240002", "20240301"),
+            self._item("20240003", "20240201"),
+        ]
+        sys.argv = ["g2b_delivery_monitor.py", "--test-telegram", "--preview", "2"]
+
+        with patch("g2b_delivery_monitor.fetch_delivery_requests", return_value=items) as mock_fetch, \
+             patch(
+                 "g2b_delivery_monitor.requests.post",
+                 side_effect=[FakeResponse(200, {"ok": True}), FakeResponse(200, {"ok": True})],
+             ) as mock_post:
+            monitor.main()
+
+        mock_fetch.assert_called_once()
+        self.assertEqual(mock_post.call_count, 2)
+
+        chat_ids = {call.kwargs["data"]["chat_id"] for call in mock_post.call_args_list}
+        self.assertEqual(chat_ids, {"555444333"})
+        self.assertNotIn("-100111222333", chat_ids)
+
+        # 최신순(20240301, 20240201)이 선택되어야 한다 - 가장 오래된 20240101은 제외.
+        sent_texts = [call.kwargs["data"]["text"] for call in mock_post.call_args_list]
+        self.assertTrue(any("20240002" in t for t in sent_texts))
+        self.assertTrue(any("20240003" in t for t in sent_texts))
+        self.assertFalse(any("20240001" in t for t in sent_texts))
+
+    def test_does_not_touch_firestore_or_seen_state(self):
+        items = [self._item("20240001", "20240101")]
+        sys.argv = ["g2b_delivery_monitor.py", "--test-telegram", "--preview", "1"]
+
+        with patch("g2b_delivery_monitor.fetch_delivery_requests", return_value=items), \
+             patch("g2b_delivery_monitor.requests.post", side_effect=[FakeResponse(200, {"ok": True})]), \
+             patch("g2b_delivery_monitor.load_seen_ids") as mock_load_seen, \
+             patch("g2b_delivery_monitor.save_seen_ids") as mock_save_seen:
+            monitor.main()
+
+        mock_load_seen.assert_not_called()
+        mock_save_seen.assert_not_called()
+
+    def test_missing_test_chat_id_fails_without_fallback_even_with_preview(self):
+        """TELEGRAM_TEST_CHAT_ID가 없으면 preview가 있어도 그룹으로 대체하지 않고 즉시 실패해야 한다."""
+        monitor.TELEGRAM_TEST_CHAT_ID = ""
+        sys.argv = ["g2b_delivery_monitor.py", "--test-telegram", "--preview", "3"]
+
+        with patch("g2b_delivery_monitor.fetch_delivery_requests") as mock_fetch, \
+             patch("g2b_delivery_monitor.requests.post") as mock_post:
+            with self.assertRaises(SystemExit) as ctx:
+                monitor.main()
+
+        self.assertEqual(ctx.exception.code, 1)
+        mock_fetch.assert_not_called()
+        mock_post.assert_not_called()
+
+    def test_test_telegram_true_without_preview_still_sends_single_fixed_message(self):
+        """test_telegram=true 단독(preview 미지정)이면 기존 고정 문구 1건 동작을 유지해야 한다."""
+        sys.argv = ["g2b_delivery_monitor.py", "--test-telegram"]
+
+        with patch("g2b_delivery_monitor.fetch_delivery_requests") as mock_fetch, \
+             patch(
+                 "g2b_delivery_monitor.requests.post",
+                 side_effect=[FakeResponse(200, {"ok": True})],
+             ) as mock_post:
+            monitor.main()
+
+        mock_fetch.assert_not_called()
+        mock_post.assert_called_once()
+        self.assertEqual(mock_post.call_args.kwargs["data"]["chat_id"], "555444333")
+
+    def test_preview_only_without_test_telegram_still_goes_to_group_chat_id(self):
+        """test_telegram=false + preview=N(기존 운영 재발송 경로)은 그룹(TELEGRAM_CHAT_ID)으로 가야 한다."""
+        items = [self._item("20240001", "20240101")]
+        sys.argv = ["g2b_delivery_monitor.py", "--preview", "1"]
+
+        with patch("g2b_delivery_monitor.fetch_delivery_requests", return_value=items), \
+             patch(
+                 "g2b_delivery_monitor.requests.post",
+                 side_effect=[FakeResponse(200, {"ok": True})],
+             ) as mock_post:
+            monitor.main()
+
+        self.assertEqual(mock_post.call_args.kwargs["data"]["chat_id"], "-100111222333")
+
+
 class DedupAndFormattingRegressionTest(unittest.TestCase):
     """텔레그램 수정과 무관한 기존 기능(중복 방지 키, 메시지 포맷)이 안 깨졌는지 확인."""
 

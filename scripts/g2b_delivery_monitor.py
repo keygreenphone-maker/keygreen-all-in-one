@@ -446,6 +446,8 @@ def main():
     # --test-telegram은 운영자 1:1(TELEGRAM_TEST_CHAT_ID)로만 보내야 하므로 별도 검증한다.
     # TELEGRAM_CHAT_ID(그룹방)로 대체 발송하면 테스트 메시지가 그룹방에 새는 사고가 되므로
     # TELEGRAM_TEST_CHAT_ID가 없으면 그룹 ID로 폴백하지 않고 즉시 실패한다.
+    # --preview를 같이 주면(실제 최신 N건을 개인에게 미리 보내는 경우) 그룹 ID는
+    # 아예 필요하지 않으므로 이 분기에서 요구하지 않는다.
     if args.test_telegram:
         if not (TELEGRAM_BOT_TOKEN and TELEGRAM_TEST_CHAT_ID):
             print("[ERROR] TELEGRAM_BOT_TOKEN / TELEGRAM_TEST_CHAT_ID 환경변수가 없습니다.")
@@ -455,7 +457,10 @@ def main():
         print("[ERROR] TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID 환경변수가 없습니다.")
         sys.exit(1)
 
-    if args.test_telegram:
+    # test_telegram=true 단독(--preview 없음)이면 기존처럼 고정 테스트 문구 1건만 보내고 끝낸다.
+    # --preview N이 같이 오면 아래에서 실제 최신 N건을 TELEGRAM_TEST_CHAT_ID로 보내야 하므로
+    # 여기서 종료하지 않고 통과시킨다.
+    if args.test_telegram and not args.preview:
         kst = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9)))
         if not send_telegram(
             f"✅ 키그린 모니터링 설정 테스트\n{kst:%Y-%m-%d %H:%M} KST",
@@ -494,13 +499,24 @@ def main():
         # 다음 정기 실행의 신규건 판정에 영향을 주지 않는다.
         targets = sorted(all_items, key=lambda x: x.get("cntrctDlvrReqDate") or "",
                          reverse=True)[:args.preview]
-        print(f"[INFO] 미리보기 {len(targets)}건 발송 (저장/이력 갱신 없음)")
+
+        # test_telegram=true + preview=N: 운영자 1:1(TELEGRAM_TEST_CHAT_ID)에게만 보낸다.
+        # 그룹(TELEGRAM_CHAT_ID)으로는 절대 새면 안 되므로 여기서 명시적으로 chat_id를
+        # 고정하고, send_telegram의 기본값(그룹방)에 의존하지 않는다.
+        if args.test_telegram:
+            preview_chat_id = TELEGRAM_TEST_CHAT_ID
+            label = "테스트(개인) 미리보기"
+        else:
+            preview_chat_id = None  # 기존처럼 그룹방(TELEGRAM_CHAT_ID)
+            label = "미리보기"
+
+        print(f"[INFO] {label} {len(targets)}건 발송 (저장/이력 갱신 없음)")
         failed = 0
         for item in targets:
-            if not send_telegram(format_telegram_message(item)):
+            if not send_telegram(format_telegram_message(item), chat_id=preview_chat_id):
                 failed += 1
         if failed:
-            print(f"[ERROR] 미리보기 발송 실패 {failed}/{len(targets)}건")
+            print(f"[ERROR] {label} 발송 실패 {failed}/{len(targets)}건")
             sys.exit(1)
         return
 

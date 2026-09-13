@@ -111,7 +111,12 @@ jobs:
           PREVIEW_N: ${{ github.event.inputs.preview }}
 
         run: |
-          if [ "${{ github.event.inputs.test_telegram }}" = "true" ]; then
+          if [ "${{ github.event.inputs.test_telegram }}" = "true" ] && [ -n "$PREVIEW_N" ]; then
+            # test_telegram=true + preview=N: 실제 최신 N건을 운영자 1:1(TELEGRAM_TEST_CHAT_ID)로만
+            # 발송한다. 저장/이력 갱신 없음, 그룹(TELEGRAM_CHAT_ID)으로는 절대 가지 않는다.
+            python scripts/g2b_delivery_monitor.py --test-telegram --preview "$PREVIEW_N" --days 30
+
+          elif [ "${{ github.event.inputs.test_telegram }}" = "true" ]; then
             python scripts/g2b_delivery_monitor.py --test-telegram
 
           elif [ -n "$PREVIEW_N" ]; then
