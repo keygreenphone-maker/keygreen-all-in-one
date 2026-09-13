@@ -276,19 +276,47 @@ def save_seen_ids(db, seen_ids):
     resp.raise_for_status()
 
 
+def _extract_migrate_to_chat_id(resp) -> str:
+    """그룹이 슈퍼그룹으로 전환되면 텔레그램이 400 + parameters.migrate_to_chat_id로
+    새 chat_id를 알려준다. 해당 형태가 아니면 빈 문자열을 돌려준다."""
+    if resp.status_code != 400:
+        return ""
+    try:
+        body = resp.json()
+    except ValueError:
+        return ""
+    migrate_to = (body or {}).get("parameters", {}).get("migrate_to_chat_id")
+    return str(migrate_to) if migrate_to is not None else ""
+
+
 def send_telegram(text: str) -> bool:
     """전송 성공 여부를 돌려준다. 실패를 삼키면 알림이 안 온 걸 알 수 없다."""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    resp = requests.post(url, data={
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": text,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True,
-    }, timeout=10)
-    if resp.status_code != 200:
-        print(f"[ERROR] 텔레그램 전송 실패: {resp.status_code} {resp.text}")
+
+    def _post(chat_id):
+        return requests.post(url, data={
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        }, timeout=10)
+
+    resp = _post(TELEGRAM_CHAT_ID)
+    if resp.status_code == 200:
+        return True
+
+    # 그룹 -> 슈퍼그룹 전환 응답이면 새 chat_id로 같은 메시지를 정확히 1회 재시도한다.
+    migrated_chat_id = _extract_migrate_to_chat_id(resp)
+    if migrated_chat_id:
+        print(f"[WARN] 텔레그램 그룹이 슈퍼그룹으로 전환됨 (새 chat_id={migrated_chat_id}) - 재시도합니다.")
+        retry_resp = _post(migrated_chat_id)
+        if retry_resp.status_code == 200:
+            return True
+        print(f"[ERROR] 텔레그램 전송 실패(재시도 후): {retry_resp.status_code} {retry_resp.text}")
         return False
-    return True
+
+    print(f"[ERROR] 텔레그램 전송 실패: {resp.status_code} {resp.text}")
+    return False
 
 
 def _to_int(v):
